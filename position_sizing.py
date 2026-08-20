@@ -390,7 +390,7 @@ def cross_check(df: pd.DataFrame, sigma: pd.Series):
 # Orchestration
 # ---------------------------------------------------------------------------
 
-def run_pipeline(csv_path, output_path, cfg: Config, basis="equity"):
+def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False):
     api_key = os.environ.get("ALPACA_API_KEY")
     secret_key = os.environ.get("ALPACA_SECRET_KEY")
     if not api_key or not secret_key:
@@ -401,6 +401,11 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity"):
     data_client = StockHistoricalDataClient(api_key, secret_key)
 
     staleness_errors, file_hash, mtime = check_staleness(csv_path, cfg)
+    if staleness_errors and force:
+        print("--force: bypassing staleness guard:")
+        for e in staleness_errors:
+            print(f"  - {e}")
+        staleness_errors = []
 
     df = load_weekly_csv(csv_path)
     errors = staleness_errors + validate(df, trading_client, cfg)
@@ -518,6 +523,11 @@ def main():
     parser.add_argument("--position-cap", type=float, default=0.12)
     parser.add_argument("--position-floor", type=float, default=0.015)
     parser.add_argument("--benchmark", default="SPY")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Bypass the staleness guard (unchanged file hash / old mtime) - for re-testing the same file",
+    )
     args = parser.parse_args()
 
     cfg = Config(
@@ -529,7 +539,7 @@ def main():
         apply_regime_scaling=args.apply_regime_scaling,
         benchmark=args.benchmark,
     )
-    run_pipeline(args.csv_path, args.output, cfg, basis=args.basis)
+    run_pipeline(args.csv_path, args.output, cfg, basis=args.basis, force=args.force)
 
 
 if __name__ == "__main__":

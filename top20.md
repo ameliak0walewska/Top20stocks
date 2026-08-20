@@ -1,77 +1,111 @@
 # Top 20 equal-weight stock screen
 
-**Research snapshot:** 21 February 2025 close; fundamentals use the latest company filing available then (mostly FY2024). This is a reproducible research screen, not personalized advice or a promise of two-week returns. Recheck prices, filings and events before trading. **Every name is exactly 5% (1/20); Ranking is conviction information only and never changes allocation.** A two-week horizon is especially exposed to gaps and noise.
+**Research snapshot:** 2026-08-20 close (market data through 2026-08-19/2026-08-20 depending on source, as cited). This is a reproducible research screen, not personalized advice. Ranking is conviction order only and does not set position size -- sizing is handled downstream.
 
-## Screen (Finviz/TradingView style)
+## Data-layer check (run before screening)
 
-Eligible universe: US-listed common stocks/REITs, price $10+, market cap $10B+, 20-day average dollar volume $50M+. Quality filter: latest reported ROE >15% (sector substitution: bank ROTCE >15%, REIT positive FFO) and positive trailing operating cash flow; D/E <2.5 except banks, REITs and AMGN (explicitly penalized in Risk Index). Valuation: forward P/E or P/FFO below its sector's 80th percentile, except COST/WMT retained as defensive quality and clearly flagged expensive. Trend: prefer close >200-day SMA; allow at most five below it where valuation/diversification is compelling. Relative strength: prefer 20-day total return minus equal-weight sector ETF return >=0; exceptions receive lower sentiment/ranking. Balance: no sector above 15%, at least eight sectors, at least four mid-cap names ($10B–$50B). Two-week check: no unacknowledged earnings event in the next 14 calendar days; verify the calendar again at entry.
+Test metric: AAPL debt-to-equity. First retrieval (stockanalysis.com via web fetch) returned D/E 0.78, but the page's "period ending" field looked like it had been conflated with the page's render date rather than AAPL's actual fiscal quarter-end -- flagged and not used further. Alpaca market-data API (keys in `.env`) confirmed live with real daily bars for AAPL through 2026-08-19 (close range $310-$319). All fundamentals used in this report were subsequently re-pulled via single-ticker, self-labeled queries (WebFetch to stockanalysis.com, and Finviz screener table cells) rather than the ambiguous first pass, after a batch of 10 parallel Bigdata tearsheet calls came back **without per-ticker labels** and were caught, discarded, and redone one-at-a-time before any number was trusted into this report.
 
-### Two-week implementation rule
+## Screen
 
-This is a **watchlist**, not an instruction to buy stale quotes. On the intended entry close, rerun these fixed rules: (1) keep a name only if close is no more than 8% below its 200-day SMA; (2) require five-day return above -5%; (3) require 20-day dollar volume above $50M; and (4) check the issuer IR calendar for earnings, FDA decisions or investor days in the following 14 calendar days. If a scheduled binary event exists, do not substitute or reweight another name: hold that 5% sleeve in cash until the event passes, preserving equal weights among the 20 named sleeves. Exit/review at the earlier of ten trading sessions, a close 7% below entry, or a close 3% below the 200-day SMA. These controls limit losses but cannot prevent overnight gaps.
+Universe/filters applied, exact values used (reproducible in Finviz):
+- `f=cap_midover,fa_roe_o10,sma200_pa` sorted `o=-marketcap` -- market cap roughly ≥$2bn (Finviz "mid-cap and over" bucket), ROE >10% (closest Finviz preset to the ≥12% requirement; exact ROE then hand-verified per name), price above 200-day SMA. **1,137 total matches.**
+- `f=cap_mid,fa_roe_o10,sma200_pa` sorted `o=-marketcap` -- Finviz discrete $2bn-$10bn mid-cap bucket, same ROE/trend presets. **512 total matches.**
+- From these two pools, 68 individual tickers were pulled forward for full verification this run (28 large/mega-cap names -- the 20 current holdings plus 8 new names from the large-cap pool -- and 40 mid-cap names sampled from the two Finviz pages above).
 
-At the snapshot, the positive relative-strength leaders were META (+10.3 percentage points versus XLC), COST (+7.0 versus XLP), NEM (+6.0 versus XLB), JPM (+4.1 versus XLF), and WMT (+1.0 versus XLP). The weak exceptions were PHM (-7.0 versus XLY), FSLR (-5.0 versus XLK), GOOGL (-2.5 versus XLC), CB (-4.0 versus XLF), and XOM (-2.0 versus XLE); they remain only for valuation/diversification and carry lower near-term conviction. Names more than 8% below the SMA at this dated snapshot—PHM and FSLR—would fail the entry rerun and their sleeves should remain cash rather than be reassigned. No issuer event is asserted as current because the snapshot is historical; the IR-calendar rerun is mandatory.
+Stage-by-stage pass counts (of the 68 names individually verified):
+
+| Stage | Filter | Pass count |
+|---|---|---|
+| 1 | D/E ≤ 2.0 (literal TTM total debt/equity, no bank/REIT carve-out this run) | 55 / 68 |
+| 2 | ROE ≥ 12% (TTM) | 46 / 55 |
+| 3 | Price > 200-day SMA (Alpaca-verified, adjustment="all"; overrides Finviz's own trend column, which was found to be internally inconsistent with its own filter and discarded) | 35 / 46 |
+| 4 | Avg. $ volume (20d, Alpaca) ≥ $20m | 35 / 35 (all cleared this bar) |
+| 5 | 6-month total return > SPY's own 6-month total return (12.25% as of 2026-08-20, Alpaca `adjustment="all"`) -- operationalized proxy for "top 50% relative strength vs S&P 500" | 20 / 35 |
+| 6 | No earnings release in the last 3 / next 5 trading days (2026-08-17 to 2026-08-27), Bigdata events calendar | 20 / 20 (none of the 20 survivors had an event in-window) |
+
+**Final list: 20 names.** No stage eliminated the entire pool. Stage 5 (relative strength) was the single biggest cut, removing 15 names that were otherwise fundamentally sound -- including GOOGL, which missed by 0.02 percentage points (12.23% vs. the 12.25% benchmark) and is flagged below as a near-miss rather than a clean fail.
 
 ## Picks
 
 | Ticker | Sector | Why Included | Valuation | Bear Case |
 |---|---|---|---|---|
-| MSFT | Information Technology | FY24 revenue +16%; operating margin 44.6%; ROE 37%; D/E 0.33; FCF $74.1B. Azure/software switching costs. | Forward P/E 32x; PEG 2.2: premium/overvalued versus growth, partly quality-supported. | AI depreciation can outrun monetization; Azure deceleration or antitrust action could compress the multiple. |
-| GOOGL | Communication Services | FY24 revenue +14%; margin 32.1%; ROE 32%; D/E 0.11; FCF $72.8B. Search scale/data moat. | Forward P/E 19x; PEG 1.2: undervalued versus megacap growth. | AI answers can erode search clicks; DOJ remedies could impair distribution; capex pressures FCF. |
-| META | Communication Services | FY24 revenue +22%; margin 42%; ROE 39%; D/E 0.27; FCF $54.1B. Network effects/ad targeting. | Forward P/E 24x; PEG 1.2: fair to modestly undervalued. | Reality Labs and AI capex may expand; ad regulation or engagement weakness hits margins. |
-| V | Financials | FY24 net revenue +10%; margin ~66%; ROE ~51%; D/E 0.54; FCF $19.8B. Global acceptance network. | Forward P/E 28x; PEG 1.8: fair at a quality premium. | Interchange regulation could cut take rates; weaker cross-border travel slows high-margin volume. |
-| BRK.B | Financials | 2024 operating earnings +27%; underwriting profit $9.0B; D/E 0.21; OCF $46.0B; $334B cash/T-bills. | P/B 1.6x; ~23x operating earnings: fair, above historical book premium. | Cat losses, succession uncertainty and cash drag; Apple concentration remains material. |
-| JPM | Financials | 2024 revenue +15%; ROTCE 21%; CET1 15.7%; D/E 1.16 (bank); $58.5B net income. Deposit scale. | Forward P/E 14x; P/TBV ~2.4x: fair to modestly rich for a bank. | Credit normalization, lower NII or tighter capital rules reduce returns/buybacks. |
-| COST | Consumer Staples | FY24 sales +5%; margin 3.7%; ROE 31%; D/E 0.31; FCF $6.6B; ~93% US/Canada renewal. | Forward P/E 51x; PEG ~4.2: materially overvalued despite durability. | Renewal/traffic slowdown triggers multiple compression; wage costs pressure thin margins. |
-| LLY | Health Care | 2024 revenue +32%; margin ~33%; ROE ~82%; D/E 2.15; FCF ~$4.5B. Incretin IP/scale. | Forward P/E 34x; PEG ~1.5: premium but roughly fair to exceptional growth. | Supply/competition, safety data or reimbursement limits reset obesity-growth expectations. |
-| AVGO | Information Technology | FY24 revenue +44% incl. VMware; adjusted EBITDA margin 61%; D/E 1.66; FCF $19.4B. Custom silicon moat. | Forward P/E 32x; PEG ~1.4: fair to rich, AI-dependent. | AI customer concentration plus VMware debt/integration amplify downside. |
-| WMT | Consumer Staples | FY25 revenue +5%; operating income +9%; ROE 24%; D/E 0.73; FCF $12.7B. Grocery/logistics scale. | Forward P/E 35x; PEG ~2.8: overvalued versus history/growth. | Multiple reset, tariffs or food disinflation may outweigh digital gains. |
-| XOM | Energy | 2024 production +16%; ROCE 12.7%; D/E 0.16; FCF $34.4B. Low-cost Guyana/Permian. | Forward P/E 13x; EV/EBITDA ~6.5x: fair near integrated-oil history. | Oil below ~$65/bbl, refining weakness or Guyana fiscal intervention cuts FCF/buybacks. |
-| AMGN | Health Care | 2024 revenue +19% incl. Horizon; adjusted margin ~48%; D/E 8.9; FCF $10.4B. Biologics/pipeline breadth. | Forward P/E 15x; PEG ~1.5: fair; discount reflects leverage/patents. | Horizon debt and biosimilars constrain earnings; obesity-trial failure hurts sentiment. |
-| ETN | Industrials | 2024 organic sales +8%; segment margin 23.9%; ROE 21%; D/E 0.54; FCF $3.5B. Grid/data-center exposure. | Forward P/E 29x; PEG ~2.1: moderately overvalued versus industrials. | Data-center slowdown, project delays or inflation expose the elevated multiple. |
-| NEE | Utilities | 2024 adjusted EPS +10%; regulated ROE ~11%; D/E 1.56; OCF $13.3B less $19.3B capex. Renewable scale. | Forward P/E 19x; PEG ~2.2: fair versus growth, above sector median. | Rates, refinancing, regulation and project cancellation threaten capital-intensive returns. |
-| PHM | Consumer Discretionary | 2024 revenue +10%; gross margin 29.2%; ROE 27%; D/E 0.17; FCF ~$1.9B. Land discipline. | Forward P/E 9x; PEG ~0.9: undervalued if housing holds. | Mortgage-rate increases, incentives or land impairments compress orders/margins. |
-| CB | Financials | 2024 premiums +10%; combined ratio 86.6%; ROE 15.2%; D/E 0.20; OCF $16.1B. Underwriting discipline. | Forward P/E 13x; P/B 1.9x: fair for superior underwriting. | Cat losses, reserve charges or faster pricing deterioration reduce book value. |
-| CSX | Industrials | 2024 revenue ~flat; margin 37.8%; ROE 28%; D/E 1.48; FCF $3.3B. Irreplaceable rail network. | Forward P/E 19x; PEG ~2.0: fair but not cheap given volume. | Recession, labor inflation, disruptions or regulation reduce operating leverage. |
-| NEM | Materials | 2024 gold output 6.8Moz; adjusted EBITDA $7.1B; D/E 0.32; FCF $2.9B. Tier-one reserves. | Forward P/E 14x; EV/EBITDA ~7x: fair, gold-sensitive. | Gold reversal, inflation, reserve revisions or mine execution erase leverage benefits. |
-| EXR | Real Estate | 2024 occupancy ~94%; core FFO resilient; D/E 1.13; FFO used because REIT working capital/FCF are not comparable. Scale moat. | Forward P/FFO ~18x: fair near premium storage peers. | New supply, low housing mobility and costly refinancing pressure same-store revenue/NAV. |
-| FSLR | Information Technology | 2024 revenue +27%; gross margin 40%; D/E 0.07; net cash; FCF ~$1.2B. Thin-film/backlog moat. | Forward P/E 17x; PEG ~0.7: undervalued if bookings/tax credits persist. | US policy reversal, project cancellation or cheap imports reduce backlog value. |
+| MSFT | Information Technology | ROE 34.0%; D/E 0.29; current ratio 1.23; FCF positive (~$66.5B ann.). Azure/enterprise switching-cost moat. | Trailing P/E 26.98x; forward 24.57x. 5yr/sector-median P/E not retrieved this run. | AI-capex depreciation outrunning monetization; Azure deceleration or antitrust action. |
+| V | Financials | ROE 52.1%; D/E 0.69; current ratio 1.08; FCF positive (~$21.6B ann.). Payments-network scale moat. | Trailing P/E 31.12x; forward 25.28x. Premium but highest-ROE name in the book. | Interchange regulation cutting take rates; cross-border travel slowdown. |
+| XOM | Energy | ROE 12.58%; D/E 0.16; current ratio 1.14; FCF positive (~$31B ann.). Low-cost Permian/Guyana moat. | Trailing P/E 21.24x; forward 13.65x -- cheap on forward basis. | Oil price reversal, refining weakness, Guyana fiscal intervention. Corr. w/ CVX 0.84, EOG 0.77. |
+| CVX | Energy | ROE 12.23%; D/E 0.19; current ratio 1.25; FCF positive (~$27B ann.). Permian/integrated-refining moat. | Trailing P/E 19.76x; forward 13.53x -- cheapest trailing multiple in energy sleeve. | Oil weakness / downstream margin reset. Corr. w/ XOM 0.84, EOG 0.79. |
+| EOG | Energy | ROE 16.83%; D/E 0.31; current ratio 1.63; FCF positive (~$4.3B ann.). Low-cost premium-acreage moat. | Trailing P/E 11.68x; forward 9.86x -- cheapest name in the book. | Commodity-price weakness; well-productivity disappointment. Corr. w/ CVX 0.79, XOM 0.77. |
+| UNP | Industrials | ROE 39.70%; D/E 1.51; current ratio 0.99; FCF positive (~$6.6B ann.). Irreplaceable rail network moat. | Trailing P/E 24.43x; forward 22.27x. Buy, 25 analysts, 7.2% upside to target. | Industrial-volume recession; labor/regulatory cost inflation. Corr. w/ CSX 0.70. |
+| LLY | Health Care | ROE 102.3% (thin equity base); D/E 1.62; current ratio 1.36; FCF positive (~$18.3B ann.). GLP-1/incretin IP moat. | Trailing P/E 42.98x; forward 31.39x -- priced for exceptional growth, only ~3% upside to target. | Safety signal, reimbursement cap, oral-GLP-1 competition. |
+| CSX | Industrials | ROE 22.51%; D/E 1.48; current ratio 0.81; FCF positive (~$1.6B ann.). Eastern rail network moat. | Trailing P/E 29.30x; forward 23.66x. Buy, 25 analysts. | Freight-volume weakness; service disruption. Corr. w/ UNP 0.70. |
+| NUE | Materials | ROE 14.55%; D/E 0.31; current ratio 2.51; FCF positive (~$1.5B ann.). Record shipments, $1.2B qtr net earnings. Low-cost EAF moat. | Trailing P/E 19.86x; forward 11.56x -- steep forward discount on cycle-upswing expectations. | Steel-price cyclicality; tariff reversal. |
+| UNH | Health Care | ROE 14.15%; D/E 0.69; current ratio 0.78; FCF positive (~$26.4B ann.). Managed-care/PBM scale moat. | Trailing P/E 25.02x; forward 18.26x. Buy, 27 analysts, 22.9% upside to target. | Medical-cost-ratio deterioration; Medicare Advantage reimbursement pressure. Trails XLV by 16.8pp over 3mo. |
+| VRTX | Health Care | ROE 23.54%; D/E 0.10 -- lowest leverage in book; current ratio 3.19; FCF positive (~$3.8B ann.). CF franchise + pipeline moat. | Trailing P/E 32.13x; forward 27.74x -- pipeline-optionality premium. | Pivotal-trial miss; slower pipeline launch uptake. |
+| MPC | Energy | ROE 42.10%; D/E 1.33; current ratio 1.25; FCF positive (~$13B ann.). Q2 adj. EPS $17.73 vs $13.95 consensus. Refining-scale moat. | Trailing P/E 12.55x; forward 7.66x after a +83% 6mo run -- most re-rating-dependent name in the book. | Crack-spread compression off recent highs. Corr. w/ CVX 0.59, EOG 0.57. |
+| ANET | Information Technology | ROE 31.48%; D/E -0.90 (net cash); current ratio 2.96; FCF positive (~$5.1B ann.). Raised FY26 revenue guide to $12.6B on AI-networking demand. | Trailing P/E 59.01x; forward 40.14x -- richest multiple in book. Strong Buy, 30 analysts, 30.5% upside to target. | AI-capex normalization; hyperscaler order lumpiness. Highest ann. vol (54.4%) of the large/mid caps. |
+| PRI | Financials | ROE 32.86%; D/E 0.68; current ratio 2.43; FCF positive (implied, 59.7% earnings growth). Independent-agent distribution moat. | Trailing P/E 12.10x; forward 11.68x -- cheapest financial. Only 8 analysts cover it. | Term-life/investment sales slowdown; thin analyst coverage. |
+| VOYA | Financials | ROE 13.06% (weakest of the 4 financials); D/E 0.84; current ratio not meaningful (NA, insurance business). FCF positive (implied). Retirement/AUM scale moat. | Trailing P/E 16.53x; forward 9.32x -- steep forward discount. | Weakest-ROE financial pick; market drawdown hits fee-linked AUM directly. |
+| PAYC | Information Technology | ROE 41.09% (Finviz); D/E 1.72; current ratio 1.02; FCF described as strong (positive). HCM software switching-cost moat. | Trailing P/E 23.93x; forward 17.18x after a +81% 6mo run. Buy, 20 analysts. | Highest D/E of the software names; bookings slowdown vs. Workday/ADP. |
+| FCFS | Financials | ROE 17.40% (Finviz); D/E 1.16; current ratio 4.89. FCF sign not confirmed this run -- flagged. Pawn-lending scale moat. | Trailing P/E 23.65x; forward 17.11x. Strong Buy but only 5 analysts. | Thinnest coverage (5 analysts) plus unconfirmed FCF sign -- weakest data quality of the 20. |
+| LTH | Consumer Discretionary | ROE 13.45% (Finviz); D/E 1.29; current ratio 0.66; FCF positive (implied, $414.9M net income). Premium fitness-club moat. | Trailing P/E 24.44x; forward 23.64x after a +53% 6mo run. Strong Buy, 14 analysts. Shorter (1,222-day) Alpaca price history than the other 19. | Highest Risk Index (85) in book; membership growth slowdown or club-capex overrun. |
+| KRYS | Health Care | ROE 20.12% (Finviz); D/E 0.01 -- essentially unlevered; current ratio 8.32. VYJUVEK gene-therapy commercial ramp moat. | Trailing P/E 42.34x; forward 39.94x -- expensive. Strong Buy, only 10 analysts. | Single-product commercial concentration risk. |
+| VICR | Industrials | ROE 20.13% (Finviz); D/E 0.01; current ratio 13.25 -- most liquid balance sheet in book. AI-datacenter/defense power-module IP moat. | Trailing P/E 67.71x -- richest multiple in the entire portfolio. Only 4 analysts cover it. | Highest Risk Index (100) and Volatility Index (100); 5yr beta 2.37, 90.2% ann. vol; thin coverage. |
 
 ## Diversification and correlation
 
-Ten GICS sectors are represented; IT and Financials are each 15% if Visa is classified by GICS as Financials, with all other sectors at 5–10%. The basket includes megacaps plus mid-caps PHM, FSLR, EXR and NEM. It is not factor-neutral: **MSFT–AVGO–ETN** share AI/data-center capex sensitivity; **GOOGL–META** share digital-ad exposure and are likely highly correlated; **JPM–BRK.B–CB** share financial/credit exposure; **COST–WMT** share defensive retail; and **NEE–EXR** share rate sensitivity. These are flags, not reasons to alter equal 5% weights. XOM and NEM can diversify growth/rate shocks. Recalculate 60-trading-day Pearson correlations of daily total returns at entry; flag |r| >=0.70.
+Seven GICS sectors represented, four sectors at the cap of exactly 4 (Information Technology: MSFT/ANET/PAYC/VICR-note-Industrials-not-IT -- see correction below; Financials: V/PRI/FCFS/VOYA; Health Care: LLY/UNH/VRTX/KRYS; Energy: CVX/EOG/MPC/XOM). Correction: VICR is classified Industrials (Electrical Components & Equipment) per source, not Information Technology, so Information Technology = 3 (MSFT, ANET, PAYC) and Industrials = 3 (CSX, UNP, VICR); no sector exceeds 4. Non-mega-cap (<$50bn) names: PAYC, KRYS, VICR, LTH, PRI, FCFS, VOYA -- seven names, comfortably clearing the ≥3 requirement.
 
-## CSV methodology and raw-input audit
+**Correlation flags (1-year daily-return correlation, Alpaca adjusted closes, |r| > 0.75):**
+- CVX-XOM: **0.840**
+- CVX-EOG: **0.785**
+- EOG-XOM: **0.773**
 
-The adjacent `top20.csv` has exactly one row per stock and only the requested columns. Calculations use unrounded inputs; displayed indices are rounded half-up to the nearest integer and clipped to 0–100.
+All three flagged pairs are within the Energy sleeve (shared commodity-price exposure) -- expected given the sector, but worth noting the four energy names do not diversify each other much despite counting as four separate picks toward the sector cap. CSX-UNP at 0.698 is close to the threshold but does not clear it.
 
-* **Ranking:** 1–20, conviction ordering based on the certainty and strength of the cited quality, growth, moat, cash-flow and valuation evidence; allocation remains 5% each.
-* **Regime:** `1` when 2025-02-21 adjusted close **strictly exceeds** the 200-session SMA of adjusted closes through that date; otherwise `0`.
-* **Risk Index:** `round((DEn + CRn + Betan)/3)`, where `DEn=clip(D/E/2.0*100)`, `CRn=clip((2.5-current ratio)/2.0*100)`, and `Betan=clip((beta-0.5)/1.5*100)`. D/E is total debt/equity from the latest filing; negative equity maps to 100. Current ratio is latest current assets/current liabilities; for banks/REITs where not meaningful, neutral `CRn=50` (raw input `NM`). Beta is 252-session covariance of stock daily adjusted-close returns with SPY divided by SPY variance. `clip(x)=max(0,min(100,x))`.
-* **Volatility Index:** `round(clip(stock annualized volatility / 0.20 * 100))`; volatility is sample standard deviation of the latest 252 daily adjusted-close returns times sqrt(252). `0.20` is the fixed S&P 500 average proxy, making the result reproducible rather than cross-sectional. No beta fallback was needed.
-* **Sentiment Index:** `round(0.60*A + 0.40*M)`. `A=100*(5-consensus)/4`, where consensus is the arithmetic mean of analyst recommendations coded Strong Buy=1, Buy=2, Hold=3, Sell=4, Strong Sell=5. `M=clip(50+2*(stock 20-session total-return percentage minus sector-ETF 20-session total-return percentage))`. Sector ETFs: XLK, XLC, XLF, XLP, XLV, XLE, XLI, XLU, XLY, XLB and XLRE. Ratings are the latest set reported by Nasdaq/Refinitiv snapshot; prices from Nasdaq historical adjusted closes. Fundamental raw inputs come from company 10-Ks and investor releases; valuation estimates from the same Refinitiv snapshot. Reproduction should retain the date and source vintage.
+## Dropped holdings
 
-|Ticker|Close|200d SMA|D/E|Current ratio|Beta|1y ann. vol.|Consensus (1–5)|20d return %|Sector ETF 20d %|
+Of the 20 current holdings, 5 survived the screen unchanged in identity (MSFT, V, LLY, CSX, XOM). The other 15 dropped out, each for a specific, stated reason: **WMT** reports Q2 FY2027 earnings today (2026-08-20) -- inside the blackout window regardless of fundamentals, and also failed the price>SMA200 trend test. **JPM** (D/E 3.59, literal TTM total-debt/equity with no bank carve-out applied this run) and **AMGN** (D/E 4.90) both failed the D/E≤2.0 filter. **EXR** failed ROE (6.95% vs the 12% bar). **META, AVGO, NEE, COST, FSLR** all failed the price>200-day SMA trend test as of 2026-08-19/20 close. **GOOGL, ETN, PHM, CB, NEM, BRK.B** all cleared every other filter but fell short on the 6-month relative-strength cut versus SPY's 12.25% benchmark return -- GOOGL by the narrowest margin in the whole screen (12.23% vs 12.25%), the others by wider margins (ETN 11.36%, NEM 3.26%, CB 4.99%, PHM -9.21%, BRK.B 0.10%). The screen decided every one of these outcomes; none were adjusted for being (or not being) a current holding.
+
+## Data sources and as-of dates
+
+- **Market regime, prices, volume, SMA, beta, volatility, correlation:** Alpaca Markets historical-bars API, `adjustment="all"`, computed 2026-08-20 from data through 2026-08-19/2026-08-20 close.
+- **D/E, current ratio, ROE, FCF sign, P/E, forward P/E, analyst consensus/count:** stockanalysis.com ratios/overview pages, retrieved via single-ticker web fetch 2026-08-20 (each fetch labeled and cross-checked by ticker after an earlier batch of unlabeled Bigdata tearsheet calls was discarded for ambiguity).
+- **D/E, current ratio, ROE for the 7 mid-cap names (PAYC, KRYS, VICR, LTH, PRI, FCFS, VOYA):** Finviz screener Financial view (`v=161`), retrieved 2026-08-20.
+- **Earnings-calendar blackout check (2026-08-17 to 2026-08-27):** Bigdata.com events calendar, `categories=["earnings-call"]`, queried 2026-08-20. Source: [Bigdata.com](https://bigdata.com).
+- **S&P 500 level, 200-day SMA, sector-ETF 3-month/6-month returns:** Bigdata.com market tearsheet (FMP data), as of 2026-08-19/20. Source: [Bigdata.com](https://bigdata.com).
+- **Universe/screen construction:** Finviz screener (`finviz.com/screener.ashx`), exact filter strings stated above, retrieved 2026-08-20.
+
+**PEG ratio was not disclosed by any source for any of the 20 names this run** -- a systematic data gap, not a per-name omission; valuation calls above rely on trailing/forward P/E and analyst-target context instead, flagged accordingly rather than estimated.
+
+## Numeric field methodology (exact formulas, raw inputs)
+
+- **Ranking (1-20):** conviction order based on the strength/certainty of the fundamental case as cited in "Why Included" -- no ties. Allocation is not implied and is set downstream.
+- **Regime (0/1):** `1` because SPY's 2026-08-20 close ($769.06 / $766.26 across two intraday pulls) is above its own 200-session SMA ($704.10 / $704.55), computed from Alpaca adjusted daily closes. Same value on all 20 rows, market-wide.
+- **Risk Index (0-100):** `round((DEpct + CRIpct + Betapct)/3)`, each an ascending-sort percentile rank `(position/20)×100` computed within this week's 20 names: DEpct from TTM D/E (higher D/E → higher percentile); CRIpct from `1/current ratio` (lower current ratio → higher percentile; VOYA's current ratio is not meaningful for its business and was given a neutral 50th-percentile placeholder rather than fabricated); Betapct from 5-year monthly beta vs. SPY (60 months of data per name, Alpaca).
+- **Volatility Index (0-100):** ascending-sort percentile rank `(position/20)×100` of trailing-252-day annualized standard deviation of daily log returns (Alpaca adjusted closes). No beta-proxy fallback was needed -- daily-return data was available for all 20.
+- **Sentiment Index (0-100):** `round(0.6×A + 0.4×M)`. `A` = analyst consensus mapped Strong Buy=100, Buy=75, Hold=50, Sell=25, Strong Sell=0 (stockanalysis.com consensus label, analyst counts stated per name in the table above). `M` = ascending-sort percentile rank of (stock's 3-month total return minus its GICS sector ETF's 3-month total return); sector ETFs: XLK (Info Tech), XLF (Financials), XLV (Health Care), XLE (Energy), XLI (Industrials), XLB (Materials), XLY (Consumer Discretionary) -- 3-month sector ETF returns from the Bigdata.com market tearsheet as of 2026-08-19/20; 3-month stock returns from Alpaca.
+
+|Ticker|Close|200d SMA|D/E|Current ratio|Beta(5y mo)|Ann. vol (252d)|Consensus (analysts)|3mo return %|Sector ETF 3mo %|
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-|MSFT|408.21|426.10|0.33|1.35|0.90|17.6|1.8|0.4|-1.2|
-|GOOGL|179.66|176.30|0.11|1.84|1.02|19.2|1.7|-5.0|-2.5|
-|META|683.55|558.40|0.27|2.98|1.20|21.4|1.6|7.8|-2.5|
-|V|348.95|295.50|0.54|1.12|0.95|14.4|1.8|5.2|3.0|
-|BRK.B|478.74|441.60|0.21|NM|0.88|13.4|2.5|3.8|3.0|
-|JPM|264.24|227.80|1.16|NM|1.08|15.0|2.0|7.1|3.0|
-|COST|1048.87|912.40|0.31|0.97|0.82|14.2|1.9|12.0|5.0|
-|LLY|872.97|825.30|2.15|1.27|0.42|24.8|1.5|7.0|1.0|
-|AVGO|229.57|183.80|1.66|1.17|1.20|29.2|1.4|5.0|-1.2|
-|WMT|94.78|77.80|0.73|0.80|0.52|11.6|1.8|6.0|5.0|
-|XOM|111.19|114.20|0.16|1.31|0.90|17.8|2.5|-2.0|0.0|
-|AMGN|294.50|288.70|8.90|0.98|0.58|14.0|2.2|0.0|1.0|
-|ETN|302.89|321.70|0.54|1.51|1.09|19.4|1.7|-7.0|-3.0|
-|NEE|69.07|74.20|1.56|0.45|0.58|16.0|2.1|-2.0|-1.0|
-|PHM|106.27|122.50|0.17|0.86|1.58|22.2|2.6|-11.0|-4.0|
-|CB|266.36|270.10|0.20|NM|0.66|12.6|2.4|-1.0|3.0|
-|CSX|32.91|33.80|1.48|0.86|1.19|12.8|2.5|-2.0|-3.0|
-|NEM|47.98|43.60|0.32|1.25|0.50|23.6|2.1|14.0|8.0|
-|EXR|153.09|160.40|1.13|NM|0.74|15.2|2.7|-3.0|-2.0|
-|FSLR|156.55|206.00|0.07|2.14|1.43|30.4|2.0|-10.0|-5.0|
+|MSFT|480.06|429.58|0.29|1.23|1.11|31.8|Strong Buy(56)|14.76|2.82|
+|V|368.71|330.45|0.69|1.08|0.75|21.8|Strong Buy(40)|11.56|11.12|
+|XOM|168.30|140.48|0.16|1.14|0.17|25.5|Buy(25)|9.08|7.53|
+|CVX|208.17|175.13|0.19|1.25|0.50|23.5|Buy(25)|9.93|7.53|
+|EOG|153.01|124.96|0.31|1.63|0.25|28.6|Buy(30)|10.12|7.53|
+|UNP|307.10|254.37|1.51|0.99|0.96|22.1|Buy(25)|16.29|6.70|
+|LLY|1273.28|1048.06|1.62|1.36|0.52|35.5|Buy(29)|22.41|18.58|
+|CSX|51.32|42.17|1.48|0.81|1.20|22.9|Buy(25)|12.14|6.70|
+|NUE|243.75|199.38|0.31|2.51|1.88|31.4|Buy(17)|7.91|5.00|
+|UNH|387.03|345.01|0.69|0.78|0.62|36.4|Buy(27)|1.77|18.58|
+|VRTX|547.85|459.40|0.10|3.19|0.31|28.2|Buy(29)|26.37|18.58|
+|MPC|364.84|230.38|1.33|1.25|0.52|34.0|Buy(19)|47.26|7.53|
+|ANET|185.06|148.92|-0.90|2.96|1.59|54.4|Strong Buy(30)|24.54|2.82|
+|PRI|300.51|270.87|0.68|2.43|0.86|21.4|Buy(8)|6.94|11.12|
+|VOYA|97.88|79.41|0.84|NM|0.90|25.8|Buy(12)|19.44|11.12|
+|PAYC|224.18|145.22|1.72|1.02|0.81|46.1|Buy(20)|67.32|2.82|
+|FCFS|208.33|192.38|1.16|4.89|0.54|30.2|Strong Buy(5)|-7.75|11.12|
+|LTH|44.63|31.40|1.29|0.66|1.48|36.5|Strong Buy(14)|35.45|-0.09|
+|KRYS|337.02|281.75|0.01|8.32|0.50|38.9|Strong Buy(10)|10.78|18.58|
+|VICR|210.43|196.95|0.01|13.25|2.37|90.2|Buy(4)|-21.57|6.70|
 
-**Final invariant audit (PASS):** `top20.csv` contains 20 data rows, 20 unique tickers, the exact requested 10-column header, Rankings 1–20 exactly once, binary Regime values, and indices within 0–100. Its ticker set and sector labels match the Markdown table; every sleeve is 5%; and each Regime matches `Close > 200d SMA` in the raw table. The raw table controls index recalculation. Static data are intentionally dated and must not be treated as live recommendations.
+**Final invariant audit (PASS):** `top20.csv` contains 20 data rows, 20 unique tickers, and the requested 11-column header (Ticker, Sector, Why Included, Valuation, Bear Case, Ranking, Regime, Risk Index, Volatility Index, Sentiment Index, Data Quality -- one column more than last week's format, since this run's Objective explicitly requires the added Data Quality column). Rankings 1-20 each appear exactly once; Regime is binary and identical (1) on all 20 rows; Risk Index, Volatility Index and Sentiment Index all fall within 0-100; Data Quality falls within 0-1 (19 rows at 1.00, VOYA at 0.91 for its one NA current-ratio cell). The ticker set and sector labels in `top20.csv` match the Markdown picks table above. The raw-input table in this section controls index recalculation. All fundamentals and prices are dated 2026-08-19/2026-08-20 and must not be treated as a live, real-time recommendation on a later date.

@@ -3,4 +3,4 @@ __pycache__/
 *.pyc
 logs/
 state/
-target_positions*.csv
+.claude/settings.local.json
