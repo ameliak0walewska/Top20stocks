@@ -25,8 +25,11 @@ Pipeline (spec section references in comments):
     3. Compute EWMA volatility per name (S3).
     4. Compute raw ranking/vol weights, optional risk/sentiment modifiers (S4).
     5. Apply position cap / floor / liquidity constraints (S5).
-    6. Ledoit-Wolf portfolio covariance -> vol targeting (S6), then the
-       continuous/confirmed/rate-limited regime scalar (regime-spec.md).
+    6. Ledoit-Wolf portfolio covariance -> risk targeting (S6): analytic
+       volatility targeting by default, or a QuantLib Monte Carlo CVaR
+       engine behind --risk-engine montecarlo (quantlib-risk-engine-spec.md,
+       see risk/engine.py). Then the continuous/confirmed/rate-limited
+       regime scalar (regime-spec.md).
     7. Cross-check computed vol vs supplied volatility_index (S7, log only).
     8. Write output CSV + a full JSON run log (S9).
 
@@ -76,6 +79,8 @@ from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
 from alpaca.common.exceptions import APIError
 
+from risk.engine import compute_risk_scalar, RiskConfig
+
 load_dotenv()
 
 BASE_DIR = Path(__file__).parent
@@ -122,6 +127,18 @@ class Config:
     regime_state_max_age_days: int = 10  # persisted state older than this triggers a cold start
     force_regime: Optional[float] = None # CLI override: pin k_regime, bypass all regime logic
     regime_dry_run: bool = False         # CLI override: compute + log k_regime but apply 1.0 to weights
+
+    # --- risk engine (quantlib-risk-engine-spec.md) ---
+    risk_engine: str = "analytic"        # "analytic" (existing k_vol) or "montecarlo" (CVaR-targeted k_risk)
+    cvar_target: float = 0.25
+    cvar_alpha: float = 0.95
+    mc_n_paths: int = 50_000
+    mc_horizon_days: int = 5
+    mc_seed: int = 42
+    mc_antithetic: bool = True
+    mc_generator: str = "sobol"          # "sobol" or "mersenne"
+    mc_drift: float = 0.0
+    risk_dry_run: bool = False           # compute + log k_risk but apply 1.0 to weights
 
 
 # ---------------------------------------------------------------------------
@@ -354,10 +371,11 @@ def apply_constraints(w: pd.Series, adv20: pd.Series, V: float, cfg: Config):
 # S6: vol targeting + regime scaling
 # ---------------------------------------------------------------------------
 
-def portfolio_vol(w: pd.Series, Sigma: pd.DataFrame):
+def aligned_sigma(w: pd.Series, Sigma: pd.DataFrame):
+    """Sigma reindexed to w's (post-constraint, possibly-dropped) ticker set,
+    as a plain ndarray for risk.engine.compute_risk_scalar."""
     idx = w.index
-    S = Sigma.loc[idx, idx].values
-    return float(np.sqrt(w.values @ S @ w.values))
+    return Sigma.loc[idx, idx].values
 
 
 def fetch_benchmark_close(data_client, cfg: Config):
@@ -590,9 +608,24 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
 
     w_constrained, dropped, bound_log = apply_constraints(w_raw, adv20, V, cfg)
 
-    sigma_p = portfolio_vol(w_constrained, Sigma)
-    k_vol = min(1.0, cfg.sigma_target / sigma_p) if sigma_p > 0 else 1.0
-    w_after_vol = w_constrained * k_vol
+    risk_cfg = RiskConfig(
+        risk_engine=cfg.risk_engine,
+        sigma_target=cfg.sigma_target,
+        cvar_target=cfg.cvar_target,
+        cvar_alpha=cfg.cvar_alpha,
+        mc_n_paths=cfg.mc_n_paths,
+        mc_horizon_days=cfg.mc_horizon_days,
+        mc_seed=cfg.mc_seed,
+        mc_antithetic=cfg.mc_antithetic,
+        mc_generator=cfg.mc_generator,
+        mc_drift=cfg.mc_drift,
+        risk_dry_run=cfg.risk_dry_run,
+    )
+    risk_result = compute_risk_scalar(w_constrained, aligned_sigma(w_constrained, Sigma), risk_cfg)
+    sigma_p = risk_result.sigma_p_analytic
+    k_vol = risk_result.k_risk
+    applied_k_vol = 1.0 if cfg.risk_dry_run else k_vol
+    w_after_vol = w_constrained * applied_k_vol
 
     supplied_regime = df["regime"].iloc[0]
     regime_result = compute_regime(benchmark_close, benchmark_used, supplied_regime, cfg)
@@ -629,6 +662,8 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
         "weight_final": w_final.to_dict(),
         "sigma_p": sigma_p,
         "k_vol": k_vol,
+        "applied_k_vol": applied_k_vol,
+        "risk": asdict(risk_result),
         "regime": regime_result,
         "applied_k_regime": applied_k_regime,
         "dropped_by_floor": dropped,
@@ -646,13 +681,23 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
         json.dumps({"hash": file_hash, "path": str(csv_path), "run_at": run_log["run_at"]}, indent=2)
     )
 
-    override_note = f" [override: {regime_result['override_applied']}]" if regime_result["override_applied"] else ""
-    dry_run_note = " (dry-run, applied=1.0)" if cfg.regime_dry_run else ""
+    regime_override_note = f" [override: {regime_result['override_applied']}]" if regime_result["override_applied"] else ""
+    regime_dry_run_note = " (dry-run, applied=1.0)" if cfg.regime_dry_run else ""
+    risk_dry_run_note = " (dry-run, applied=1.0)" if cfg.risk_dry_run else ""
     print()
     print(f"Wrote {output_path} ({len(out)} rows, {len(w_final)} held names)")
     print(f"Wrote run log {log_path}")
+    if risk_result.risk_engine_used == "montecarlo":
+        print(
+            f"[{risk_result.risk_engine_used}] sigma_p analytic={sigma_p:.3f} sim={risk_result.sigma_p_simulated:.3f}"
+            f" (diff={risk_result.sigma_p_diff_pct:+.1%})  cvar_ann={risk_result.cvar_annualised:.3f}"
+            f"  k_vol={k_vol:.3f}{risk_dry_run_note}  ({risk_result.n_paths} paths, {risk_result.generator},"
+            f" {risk_result.elapsed_ms:.0f}ms)"
+        )
+    else:
+        print(f"[{risk_result.risk_engine_used}] sigma_p={sigma_p:.3f}  k_vol={k_vol:.3f}{risk_dry_run_note}")
     print(
-        f"sigma_p={sigma_p:.3f}  k_vol={k_vol:.3f}  k_regime={k_regime:.2f}{dry_run_note}{override_note}"
+        f"k_regime={k_regime:.2f}{regime_dry_run_note}{regime_override_note}"
         f"  distance={regime_result['distance']:+.2%} vs {regime_result['benchmark_used']} 200d SMA"
         f"  cash={cash:.1%}"
     )
@@ -683,6 +728,18 @@ def main():
     parser.add_argument("--regime-max-step", type=float, default=0.15)
     parser.add_argument("--force-regime", type=float, default=None, help="Pin k_regime to a fixed value, bypassing all regime logic")
     parser.add_argument("--regime-dry-run", action="store_true", help="Compute and log k_regime without applying it to weights")
+    parser.add_argument("--risk-engine", choices=["analytic", "montecarlo"], default="analytic",
+                         help="analytic = existing volatility-targeted k_vol; montecarlo = CVaR-targeted k_risk via QuantLib "
+                              "(default analytic until CVAR_TARGET is calibrated against live weights - spec S13 step 8)")
+    parser.add_argument("--cvar-target", type=float, default=0.25, help="Annualised CVaR target (montecarlo engine only)")
+    parser.add_argument("--cvar-alpha", type=float, default=0.95)
+    parser.add_argument("--mc-paths", type=int, default=50_000, dest="mc_n_paths")
+    parser.add_argument("--mc-horizon-days", type=int, default=5)
+    parser.add_argument("--mc-seed", type=int, default=42)
+    parser.add_argument("--mc-generator", choices=["sobol", "mersenne"], default="sobol")
+    parser.add_argument("--mc-no-antithetic", action="store_false", dest="mc_antithetic")
+    parser.add_argument("--mc-drift", type=float, default=0.0, help="Non-zero means CVaR is no longer a pure risk number")
+    parser.add_argument("--risk-dry-run", action="store_true", help="Compute and log k_risk/k_vol without applying it to weights")
     parser.add_argument(
         "--force",
         action="store_true",
@@ -704,6 +761,16 @@ def main():
         regime_max_step=args.regime_max_step,
         force_regime=args.force_regime,
         regime_dry_run=args.regime_dry_run,
+        risk_engine=args.risk_engine,
+        cvar_target=args.cvar_target,
+        cvar_alpha=args.cvar_alpha,
+        mc_n_paths=args.mc_n_paths,
+        mc_horizon_days=args.mc_horizon_days,
+        mc_seed=args.mc_seed,
+        mc_antithetic=args.mc_antithetic,
+        mc_generator=args.mc_generator,
+        mc_drift=args.mc_drift,
+        risk_dry_run=args.risk_dry_run,
     )
     run_pipeline(args.csv_path, args.output, cfg, basis=args.basis, force=args.force)
 

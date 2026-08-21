@@ -1,0 +1,16 @@
+{
+  "n_paths": 50000,
+  "generator": "sobol",
+  "n_runs": 5,
+  "wall_time_ms_median": 3104.940399993211,
+  "wall_time_ms_iqr": 105.16779999306891,
+  "paths_per_second_median": 16103.368683054054,
+  "peak_memory_bytes_median": 11669491,
+  "cvar": 0.015962823562107643,
+  "phase_breakdown_ms_median": {
+    "covariance_estimation_ms": 2.7800000098068267,
+    "cholesky_ms": 7.728900003712624,
+    "path_generation_ms": 3090.194699994754,
+    "measure_computation_ms": 1.5273999888449907
+  }
+}
