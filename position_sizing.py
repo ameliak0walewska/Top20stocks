@@ -10,19 +10,23 @@ insensitive, e.g. "Risk Index" == "risk_index"): ticker, ranking, regime,
 risk_index, volatility_index, sentiment_index. Extra descriptive columns
 (Sector, Why Included, Valuation, Bear Case, ...) are tolerated and ignored.
 
-`regime` in this feed is a PER-STOCK trend flag (that stock's close vs its
-own 200-day SMA), not a single market-wide flag - it is carried through to
-the output CSV but NOT used to scale position sizes (see Config.apply_regime_scaling,
-off by default). There is no timestamp column, so staleness is detected via
-content hash + file modification time instead (S2).
+`regime` in this feed is a MARKET-WIDE flag (1 = benchmark above its own
+200-day SMA, 0 = below) and must be uniform across all 20 rows - a file with
+mixed values is malformed (see validate()). It is logged and cross-checked
+but never used as a trading input: k_regime is always computed from our own
+benchmark bars (regime-spec.md), since this upstream field has drifted
+definition once already. There is no timestamp column, so staleness is
+detected via content hash + file modification time instead (S2).
 
 Pipeline (spec section references in comments):
     1. Validate the CSV (S2) - fail closed, exit non-zero on any problem.
-    2. Pull ~300 days of daily bars for all tickers + benchmark from Alpaca.
+    2. Pull ~300 days of daily bars for all tickers, and separately for the
+       regime benchmark (with SPY fallback), from Alpaca.
     3. Compute EWMA volatility per name (S3).
     4. Compute raw ranking/vol weights, optional risk/sentiment modifiers (S4).
     5. Apply position cap / floor / liquidity constraints (S5).
-    6. Ledoit-Wolf portfolio covariance -> vol targeting + regime scaling (S6).
+    6. Ledoit-Wolf portfolio covariance -> vol targeting (S6), then the
+       continuous/confirmed/rate-limited regime scalar (regime-spec.md).
     7. Cross-check computed vol vs supplied volatility_index (S7, log only).
     8. Write output CSV + a full JSON run log (S9).
 
@@ -30,6 +34,19 @@ NOT implemented here: S8 order generation (that's trade_from_csv.py) and the
 top-25 exit hysteresis, which the weekly CSV's fixed ranking-1..20 contract
 cannot support (there is no rank-21..25 data to check a dropped name
 against) - see conversation notes.
+
+Regime scalar implementation note: regime-spec.md's confirmation-day counter
+is specified as an incremental daily state machine ("requires computing
+distance daily, not only on rebalance days"). This pipeline only runs
+weekly, but it already pulls ~300 days of daily benchmark closes on every
+run, so instead of trusting an incrementally-persisted day counter (which
+would silently go stale across a missed run), crossing_day_count is
+recomputed from scratch each run by replaying the fetched daily closes. This
+is mathematically equivalent to the spec's incremental version when the
+series has no gaps, and is robust to missed/skipped runs. The one piece of
+state that genuinely cannot be derived from price history alone -
+prev_k_regime, the last *applied* (post rate-limit) scalar - is still
+persisted in state/regime_state.json, per spec section 5.
 
 Setup: same ALPACA_API_KEY / ALPACA_SECRET_KEY in .env as trade_from_csv.py.
 
@@ -45,6 +62,7 @@ import sys
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -56,6 +74,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
+from alpaca.common.exceptions import APIError
 
 load_dotenv()
 
@@ -82,20 +101,27 @@ class Config:
     min_trade_abs: float = 25.0          # consumed downstream by trade_from_csv.py
     no_trade_band: float = 0.20          # consumed downstream by trade_from_csv.py
     exit_rank: int = 25                  # NOT enforced here - see module docstring
-    regime_off_scalar: float = 0.40
     ewma_halflife: int = 21
     vol_floor: float = 0.12
     vol_cap: float = 0.80
     liquidity_frac: float = 0.005
     use_risk_index: bool = False
     use_sentiment_index: bool = False
-    apply_regime_scaling: bool = False   # off by default: this feed's Regime is per-stock, not market-wide - see S6.1 note
-    benchmark: str = "SPY"
     lookback_days: int = 300
     cov_window: int = 250
     max_constraint_passes: int = 5
-    regime_confirm_days: int = 3
     max_file_age_days: int = 3
+
+    # --- regime scalar (regime-spec.md) ---
+    regime_benchmark: str = "^GSPC"      # falls back to SPY if unavailable, see fetch_benchmark_close()
+    regime_sma_window: int = 200
+    regime_slope: float = 5.0
+    regime_floor: float = 0.30           # set to 1.0 to cleanly disable the filter (spec S10)
+    regime_confirm_days: int = 3
+    regime_max_step: float = 0.15
+    regime_state_max_age_days: int = 10  # persisted state older than this triggers a cold start
+    force_regime: Optional[float] = None # CLI override: pin k_regime, bypass all regime logic
+    regime_dry_run: bool = False         # CLI override: compute + log k_regime but apply 1.0 to weights
 
 
 # ---------------------------------------------------------------------------
@@ -167,15 +193,15 @@ def validate(df, trading_client, cfg: Config):
         if n > 0 and (max(rankings) > 20 or min(rankings) < 1):
             errors.append("ranking values outside the 1-20 range")
 
-    # NOTE: regime here is a per-stock trend flag (close vs that stock's own 200-day SMA),
-    # not a single market-wide flag, so it is NOT required to be uniform across rows.
-    # It is currently unused by the sizing pipeline (see run_pipeline) - validated only
-    # for data quality, same as the other index columns.
+    # regime is a market-wide flag: the same value must repeat on every row.
+    # A file with mixed regime values is malformed (position-sizing-spec S1.1).
     if df["regime"].isna().any():
         errors.append("regime column has missing/non-numeric values")
     elif not df["regime"].isin([0, 1]).all():
         bad = df.loc[~df["regime"].isin([0, 1]), "ticker"].tolist()
         errors.append(f"regime values must be 0 or 1: bad for {bad}")
+    elif df["regime"].nunique() != 1:
+        errors.append(f"regime is not uniform across rows (market-wide flag): got {sorted(df['regime'].unique().tolist())}")
 
     for col in ("risk_index", "volatility_index", "sentiment_index"):
         if df[col].isna().any():
@@ -334,42 +360,171 @@ def portfolio_vol(w: pd.Series, Sigma: pd.DataFrame):
     return float(np.sqrt(w.values @ S @ w.values))
 
 
-def compute_regime_scalar(benchmark_close: pd.Series, supplied_regime, cfg: Config, state_path=REGIME_STATE_PATH):
-    ma200 = benchmark_close.rolling(200).mean()
-    above = (benchmark_close > ma200).astype("Int64")
-    recent = above.tail(cfg.regime_confirm_days)
-    if len(recent) < cfg.regime_confirm_days or recent.isna().any():
-        raise ValidationError("not enough benchmark history to compute a confirmed 200-day MA regime")
+def fetch_benchmark_close(data_client, cfg: Config):
+    """Fetch daily closes for cfg.regime_benchmark (default ^GSPC). Alpaca's
+    stock data feed generally does not carry raw index tickers, so on any
+    failure this falls back to SPY - logging which was used, since SPY is
+    total-return-adjusted and the index is not (regime-spec.md S2)."""
+    candidates = [cfg.regime_benchmark]
+    if cfg.regime_benchmark != "SPY":
+        candidates.append("SPY")
 
-    our_side = int(recent.iloc[-1]) if recent.nunique() == 1 else None
+    last_err = None
+    for symbol in candidates:
+        try:
+            bars = fetch_daily_bars(data_client, [symbol], cfg.lookback_days)
+            close, _ = bars_to_frames(bars, [symbol], cfg.lookback_days)
+            if symbol != cfg.regime_benchmark:
+                print(f"  regime benchmark {cfg.regime_benchmark!r} unavailable, using fallback {symbol!r}")
+            return close[symbol], symbol
+        except Exception as e:
+            last_err = e
+            print(f"  regime benchmark {symbol!r} unavailable ({e})")
 
-    state = {"confirmed_regime": 1, "flip_count": 0, "flip_log": []}
+    raise ValidationError(f"could not fetch benchmark bars for any of {candidates}: {last_err}")
+
+
+def compute_distance_series(benchmark_close: pd.Series, sma_window: int):
+    """distance_t = (close_t - sma200_t) / sma200_t for every day the SMA is defined."""
+    sma = benchmark_close.rolling(sma_window).mean()
+    distance = (benchmark_close - sma) / sma
+    return distance.dropna()
+
+
+def compute_crossing_day_count(distance: pd.Series, confirm_days: int):
+    """Consecutive trailing days (ending today) with the same sign of distance
+    as today, capped at confirm_days (that's the only threshold that matters).
+    Computed by replaying the fetched daily series rather than incremental
+    state - see module docstring for why."""
+    signs = np.where(distance.values >= 0, 1, -1)
+    count = 1
+    last_sign = signs[-1]
+    for i in range(len(signs) - 2, -1, -1):
+        if signs[i] != last_sign:
+            break
+        count += 1
+        if count >= confirm_days:
+            break
+    return count
+
+
+def load_regime_state(state_path: Path):
     if state_path.exists():
         try:
             state = json.loads(state_path.read_text())
+            if "k_regime" in state and "last_run_at" in state:
+                return state
         except (json.JSONDecodeError, OSError):
             pass
+    return None
 
-    confirmed = state.get("confirmed_regime", 1)
-    if our_side is not None and our_side != confirmed:
-        confirmed = our_side
-        state["flip_count"] = state.get("flip_count", 0) + 1
-        state.setdefault("flip_log", []).append(
-            {"date": datetime.now(timezone.utc).isoformat(), "new_regime": confirmed}
-        )
 
-    state["confirmed_regime"] = confirmed
-    state_path.write_text(json.dumps(state, indent=2))
+def compute_regime(benchmark_close: pd.Series, benchmark_used: str, supplied_regime, cfg: Config, state_path=REGIME_STATE_PATH):
+    """Continuous/confirmed/rate-limited k_regime scalar - regime-spec.md S3-S5."""
+    distance_series = compute_distance_series(benchmark_close, cfg.regime_sma_window)
+    if len(distance_series) < cfg.regime_confirm_days:
+        raise ValidationError("not enough benchmark history to compute a confirmed regime scalar")
 
-    if supplied_regime is not None and int(supplied_regime) != confirmed:
+    distance = float(distance_series.iloc[-1])
+    sma200 = float(benchmark_close.rolling(cfg.regime_sma_window).mean().iloc[-1])
+    close = float(benchmark_close.iloc[-1])
+
+    k_raw = 0.5 + cfg.regime_slope * distance
+    k_target = float(np.clip(k_raw, cfg.regime_floor, 1.0))
+    crossing_day_count = compute_crossing_day_count(distance_series, cfg.regime_confirm_days)
+
+    prev_state = load_regime_state(state_path)
+    cold_start = prev_state is None
+    if not cold_start:
+        last_run_at = datetime.fromisoformat(prev_state["last_run_at"])
+        if datetime.now(timezone.utc) - last_run_at > timedelta(days=cfg.regime_state_max_age_days):
+            cold_start = True
+            print(f"  regime state is stale (last run {last_run_at.isoformat()}) - treating as cold start")
+
+    confirmation_blocked = False
+    crossed_side = False
+    crossing_count_12m = (prev_state or {}).get("crossing_log", [])
+
+    if cold_start:
+        prev_k_regime = k_target
+        k_after_confirm = k_target
+        k_regime = k_target
+        print("  regime: no valid prior state - cold start (rate limiter and confirmation gate skipped this run)")
+    else:
+        prev_k_regime = float(prev_state["k_regime"])
+        side_target = 1 if distance >= 0 else 0
+        side_prev = 1 if prev_k_regime >= 0.5 else 0
+        crossing_would_span = side_target != side_prev
+
+        if crossing_would_span and crossing_day_count < cfg.regime_confirm_days:
+            confirmation_blocked = True
+            k_after_confirm = max(k_target, 0.5) if side_prev == 1 else min(k_target, 0.5)
+        else:
+            k_after_confirm = k_target
+
+        delta = float(np.clip(k_after_confirm - prev_k_regime, -cfg.regime_max_step, cfg.regime_max_step))
+        k_regime = prev_k_regime + delta
+
+        side_new = 1 if k_regime >= 0.5 else 0
+        if side_new != side_prev:
+            crossed_side = True
+
+    override_applied = None
+    if cfg.force_regime is not None:
+        override_applied = "force_regime"
+        k_regime = cfg.force_regime
+    elif cfg.regime_dry_run:
+        override_applied = "regime_dry_run"
+
+    if supplied_regime is not None:
+        supplied_side = int(supplied_regime)
+        computed_side = 1 if distance >= 0 else 0
+        if supplied_side != computed_side:
+            print(
+                f"  note: supplied regime={supplied_side} disagrees with our computed "
+                f"distance-from-SMA side={computed_side}; using our computed value"
+            )
+
+    now = datetime.now(timezone.utc)
+    if crossed_side:
+        crossing_count_12m = crossing_count_12m + [now.isoformat()]
+    cutoff = now - timedelta(days=365)
+    crossing_count_12m = [t for t in crossing_count_12m if datetime.fromisoformat(t) > cutoff]
+
+    result = {
+        "benchmark_used": benchmark_used,
+        "close": close,
+        "sma200": sma200,
+        "distance": distance,
+        "k_raw": k_raw,
+        "k_target": k_target,
+        "k_after_confirm": k_after_confirm,
+        "k_regime": k_regime,
+        "prev_k_regime": prev_k_regime,
+        "crossing_day_count": crossing_day_count,
+        "confirmation_blocked": confirmation_blocked,
+        "cold_start": cold_start,
+        "crossed_side_this_run": crossed_side,
+        "crossing_count_trailing_12m": len(crossing_count_12m),
+        "override_applied": override_applied,
+        "supplied_regime": None if supplied_regime is None else int(supplied_regime),
+    }
+
+    if not cfg.regime_dry_run:
+        state_path.write_text(json.dumps({
+            "k_regime": k_regime,
+            "last_run_at": now.isoformat(),
+            "benchmark_used": benchmark_used,
+            "crossing_log": crossing_count_12m,
+        }, indent=2))
+
+    if result["crossing_count_trailing_12m"] > 5:
         print(
-            f"  note: supplied regime={int(supplied_regime)} disagrees with our confirmed "
-            f"200-day-MA regime={confirmed} (needs {cfg.regime_confirm_days} consecutive days to flip); "
-            f"using our confirmed value"
+            f"  WARNING: {result['crossing_count_trailing_12m']} regime crossings in the trailing 12 months "
+            f"(>5/yr) - REGIME_SLOPE or REGIME_CONFIRM_DAYS may need tuning (regime-spec.md S7)"
         )
 
-    k_regime = 1.00 if confirmed == 1 else cfg.regime_off_scalar
-    return k_regime, confirmed, state.get("flip_count", 0)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -416,11 +571,13 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
         sys.exit(1)
 
     tickers = df["ticker"].tolist()
-    symbols = tickers + [cfg.benchmark] if cfg.apply_regime_scaling else tickers
 
-    print(f"Fetching {cfg.lookback_days}+ days of daily bars for {len(symbols)} symbols...")
-    bars = fetch_daily_bars(data_client, symbols, cfg.lookback_days)
-    close, volume = bars_to_frames(bars, symbols, cfg.lookback_days)
+    print(f"Fetching {cfg.lookback_days}+ days of daily bars for {len(tickers)} symbols...")
+    bars = fetch_daily_bars(data_client, tickers, cfg.lookback_days)
+    close, volume = bars_to_frames(bars, tickers, cfg.lookback_days)
+
+    print(f"Fetching regime benchmark ({cfg.regime_benchmark})...")
+    benchmark_close, benchmark_used = fetch_benchmark_close(data_client, cfg)
 
     sigma = compute_ewma_vol(close[tickers], cfg)
     Sigma = compute_covariance(close[tickers], cfg)
@@ -437,16 +594,12 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
     k_vol = min(1.0, cfg.sigma_target / sigma_p) if sigma_p > 0 else 1.0
     w_after_vol = w_constrained * k_vol
 
-    if cfg.apply_regime_scaling:
-        supplied_regime = df["regime"].iloc[0]
-        k_regime, confirmed_regime, flip_count = compute_regime_scalar(close[cfg.benchmark], supplied_regime, cfg)
-    else:
-        # This feed's `regime` is a per-stock trend flag (close vs that stock's own 200-day
-        # SMA), not a single market-wide flag - there's nothing here to derive one portfolio-wide
-        # k_regime scalar from. Carried through to the output CSV as information only.
-        k_regime, confirmed_regime, flip_count = 1.0, None, None
+    supplied_regime = df["regime"].iloc[0]
+    regime_result = compute_regime(benchmark_close, benchmark_used, supplied_regime, cfg)
+    k_regime = regime_result["k_regime"]
+    applied_k_regime = 1.0 if cfg.regime_dry_run else k_regime
 
-    w_final = w_after_vol * k_regime
+    w_final = w_after_vol * applied_k_regime
     cash = 1 - w_final.sum()
 
     cross_check_flags = cross_check(df, sigma)
@@ -476,9 +629,8 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
         "weight_final": w_final.to_dict(),
         "sigma_p": sigma_p,
         "k_vol": k_vol,
-        "k_regime": k_regime,
-        "confirmed_regime": confirmed_regime,
-        "regime_flip_count_lifetime": flip_count,
+        "regime": regime_result,
+        "applied_k_regime": applied_k_regime,
         "dropped_by_floor": dropped,
         "bound_constraints": bound_log,
         "cash_pct": cash,
@@ -494,13 +646,20 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
         json.dumps({"hash": file_hash, "path": str(csv_path), "run_at": run_log["run_at"]}, indent=2)
     )
 
+    override_note = f" [override: {regime_result['override_applied']}]" if regime_result["override_applied"] else ""
+    dry_run_note = " (dry-run, applied=1.0)" if cfg.regime_dry_run else ""
     print()
     print(f"Wrote {output_path} ({len(out)} rows, {len(w_final)} held names)")
     print(f"Wrote run log {log_path}")
     print(
-        f"sigma_p={sigma_p:.3f}  k_vol={k_vol:.3f}  k_regime={k_regime:.2f} "
-        f"(confirmed_regime={confirmed_regime})  cash={cash:.1%}"
+        f"sigma_p={sigma_p:.3f}  k_vol={k_vol:.3f}  k_regime={k_regime:.2f}{dry_run_note}{override_note}"
+        f"  distance={regime_result['distance']:+.2%} vs {regime_result['benchmark_used']} 200d SMA"
+        f"  cash={cash:.1%}"
     )
+    if regime_result["cold_start"]:
+        print("  (regime: cold start this run)")
+    if regime_result["confirmation_blocked"]:
+        print(f"  (regime: crossing blocked, {regime_result['crossing_day_count']}/{cfg.regime_confirm_days} confirmation days)")
     if dropped:
         print(f"Dropped by floor constraint: {dropped}")
     return out
@@ -513,16 +672,17 @@ def main():
     parser.add_argument("--basis", default="equity", choices=["equity", "cash", "buying_power", "portfolio_value"])
     parser.add_argument("--use-risk-index", action="store_true", help="Enable S4.1 risk_index modifier (default off)")
     parser.add_argument("--use-sentiment-index", action="store_true", help="Enable S4.1 sentiment_index modifier (default off)")
-    parser.add_argument(
-        "--apply-regime-scaling",
-        action="store_true",
-        help="Enable market-wide k_regime de-risking computed from the benchmark's own 200-day MA "
-        "(default off - this feed's Regime column is per-stock, not market-wide)",
-    )
     parser.add_argument("--sigma-target", type=float, default=0.15)
     parser.add_argument("--position-cap", type=float, default=0.12)
     parser.add_argument("--position-floor", type=float, default=0.015)
-    parser.add_argument("--benchmark", default="SPY")
+    parser.add_argument("--regime-benchmark", default="^GSPC", help="Falls back to SPY automatically if unavailable")
+    parser.add_argument("--regime-sma-window", type=int, default=200)
+    parser.add_argument("--regime-slope", type=float, default=5.0)
+    parser.add_argument("--regime-floor", type=float, default=0.30, help="Set to 1.0 to cleanly disable the regime filter")
+    parser.add_argument("--regime-confirm-days", type=int, default=3)
+    parser.add_argument("--regime-max-step", type=float, default=0.15)
+    parser.add_argument("--force-regime", type=float, default=None, help="Pin k_regime to a fixed value, bypassing all regime logic")
+    parser.add_argument("--regime-dry-run", action="store_true", help="Compute and log k_regime without applying it to weights")
     parser.add_argument(
         "--force",
         action="store_true",
@@ -536,8 +696,14 @@ def main():
         position_floor=args.position_floor,
         use_risk_index=args.use_risk_index,
         use_sentiment_index=args.use_sentiment_index,
-        apply_regime_scaling=args.apply_regime_scaling,
-        benchmark=args.benchmark,
+        regime_benchmark=args.regime_benchmark,
+        regime_sma_window=args.regime_sma_window,
+        regime_slope=args.regime_slope,
+        regime_floor=args.regime_floor,
+        regime_confirm_days=args.regime_confirm_days,
+        regime_max_step=args.regime_max_step,
+        force_regime=args.force_regime,
+        regime_dry_run=args.regime_dry_run,
     )
     run_pipeline(args.csv_path, args.output, cfg, basis=args.basis, force=args.force)
 
