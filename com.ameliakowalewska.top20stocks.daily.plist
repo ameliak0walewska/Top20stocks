@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ameliakowalewska.top20stocks.daily</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/ameliakowalewska/PycharmProjects/Top20stocks/run_daily.sh</string>
+    </array>
+
+    <!-- Runs once a day at 22:00 local time - after US market close (~21:00 UK
+         time) so the day's price data has settled. Change Hour/Minute below
+         and re-run `launchctl unload` + `launchctl load` (see instructions)
+         to pick a different time. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>22</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/ameliakowalewska/PycharmProjects/Top20stocks/logs/daily/launchd_stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ameliakowalewska/PycharmProjects/Top20stocks/logs/daily/launchd_stderr.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
