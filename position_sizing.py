@@ -27,6 +27,10 @@ Pipeline (spec section references in comments):
     5. Apply position cap / floor / liquidity constraints (S5).
     6. Ledoit-Wolf portfolio covariance -> vol targeting (S6), then the
        continuous/confirmed/rate-limited regime scalar (regime-spec.md).
+    6.5. QuantLib portfolio VaR / Expected Shortfall (ql_risk.py) on the
+       weights so far - if 1-day VaR exceeds cfg.var_budget_pct of equity,
+       scale every position down proportionally (k_var), same "compute a
+       <=1.0 scalar, multiply it in" pattern as k_vol/k_regime.
     7. Cross-check computed vol vs supplied volatility_index (S7, log only).
     8. Write output CSV + a full JSON run log (S9).
 
@@ -127,6 +131,8 @@ class Config:
 
     # --- QuantLib-backed risk (ql_risk.py) ---
     var_confidence: float = 0.95         # confidence level for portfolio VaR / Expected Shortfall
+    var_budget_pct: float = 0.025        # 1-day VaR budget as a fraction of equity - exceeding it
+                                          # scales every position down (k_var), same pattern as sigma_target
 
 
 # ---------------------------------------------------------------------------
@@ -606,23 +612,42 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
     k_regime = regime_result["k_regime"]
     applied_k_regime = 1.0 if cfg.regime_dry_run else k_regime
 
-    w_final = w_after_vol * applied_k_regime
-    cash = 1 - w_final.sum()
+    w_pre_var = w_after_vol * applied_k_regime
 
-    # QuantLib portfolio VaR / Expected Shortfall (ql_risk.py): today's
-    # target weights applied retroactively to each day's actual per-stock
-    # returns over the lookback window, fed to QuantLib's own risk-stats
-    # engine (not options pricing - see ql_risk.py's module docstring).
-    held = w_final[w_final > 0].index
+    # QuantLib portfolio VaR / Expected Shortfall (ql_risk.py): the weights
+    # so far, applied retroactively to each day's actual per-stock returns
+    # over the lookback window, fed to QuantLib's own risk-stats engine
+    # (not options pricing - see ql_risk.py's module docstring). Unlike a
+    # pure report, this scalar FEEDS BACK into sizing: if the resulting
+    # portfolio's 1-day VaR exceeds cfg.var_budget_pct of equity, every
+    # position is scaled down proportionally - the same "compute a <=1.0
+    # scalar, multiply it in" pattern already used for k_vol/k_regime above.
     log_ret_all = np.log(close[tickers] / close[tickers].shift(1)).dropna()
-    portfolio_daily_returns = (log_ret_all[held] * w_final[held]).sum(axis=1)
+    held_pre_var = w_pre_var[w_pre_var > 0].index
+    portfolio_daily_returns = (log_ret_all[held_pre_var] * w_pre_var[held_pre_var]).sum(axis=1)
     try:
         var_result = ql_risk.portfolio_var(portfolio_daily_returns.values, confidence=cfg.var_confidence)
+        k_var = min(1.0, cfg.var_budget_pct / var_result["var_pct"]) if var_result["var_pct"] > 0 else 1.0
+    except Exception as e:
+        print(f"WARNING: QuantLib portfolio VaR failed ({e}) - continuing without VaR-based scaling.")
+        var_result = None
+        k_var = 1.0
+
+    w_final = w_pre_var * k_var
+    cash = 1 - w_final.sum()
+
+    if var_result is not None:
+        # Scaling every weight by k_var scales the realized portfolio return
+        # series by the same k_var, and QuantLib's mean/std-based VaR and ES
+        # scale linearly with it too - so the post-scaling figures are exact,
+        # not an approximation, without needing a second QuantLib pass.
+        var_result["var_pct"] *= k_var
+        var_result["expected_shortfall_pct"] *= k_var
         var_result["var_usd"] = var_result["var_pct"] * V
         var_result["expected_shortfall_usd"] = var_result["expected_shortfall_pct"] * V
-    except Exception as e:
-        print(f"WARNING: QuantLib portfolio VaR failed ({e}) - continuing without it.")
-        var_result = None
+        var_result["var_budget_pct"] = cfg.var_budget_pct
+        var_result["k_var"] = k_var
+        var_result["binding"] = k_var < 1.0
 
     cross_check_flags = cross_check(df, sigma)
 
@@ -631,6 +656,7 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
     out["weight_raw"] = w_raw.reindex(out.index)
     out["weight_after_constraints"] = w_constrained.reindex(out.index)
     out["weight_after_vol_target"] = w_after_vol.reindex(out.index)
+    out["weight_after_regime"] = w_pre_var.reindex(out.index)
     out["position_size"] = w_final.reindex(out.index).fillna(0.0)
     out["dropped_by_floor"] = out.index.isin(dropped)
     out["bound_constraint"] = [",".join(bound_log.get(t, [])) for t in out.index]
@@ -648,11 +674,13 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
         "weight_raw": w_raw.to_dict(),
         "weight_after_constraints": w_constrained.to_dict(),
         "weight_after_vol_target": w_after_vol.to_dict(),
+        "weight_after_regime": w_pre_var.to_dict(),
         "weight_final": w_final.to_dict(),
         "sigma_p": sigma_p,
         "k_vol": k_vol,
         "regime": regime_result,
         "applied_k_regime": applied_k_regime,
+        "k_var": k_var,
         "dropped_by_floor": dropped,
         "bound_constraints": bound_log,
         "cash_pct": cash,
@@ -681,10 +709,12 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
         f"  cash={cash:.1%}"
     )
     if var_result:
+        binding_note = "  <- SCALED DOWN POSITIONS" if var_result["binding"] else "  (within budget, no scaling)"
         print(
             f"1d VaR ({var_result['confidence']:.0%}, QuantLib): "
             f"{var_result['var_pct']:.2%}  (${var_result['var_usd']:,.0f})  "
             f"ES: {var_result['expected_shortfall_pct']:.2%}  (${var_result['expected_shortfall_usd']:,.0f})"
+            f"  |  budget={cfg.var_budget_pct:.2%}  k_var={k_var:.3f}{binding_note}"
         )
     if regime_result["cold_start"]:
         print("  (regime: cold start this run)")

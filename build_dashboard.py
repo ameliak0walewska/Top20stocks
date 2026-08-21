@@ -180,9 +180,18 @@ def build_html(run_log, history, weights, sectors):
 
     var_result = run_log.get("var_1d")
     if var_result:
+        binding = var_result.get("binding", False)
+        budget = var_result.get("var_budget_pct")
+        sub = (
+            f'budget {budget:.1%} — positions scaled down (k_var={var_result.get("k_var", 1.0):.2f})'
+            if binding
+            else (f'within {budget:.1%} budget, no scaling' if budget is not None else '')
+        )
         var_tile = (
             f'<div class="stat-tile"><div class="stat-label">1-day VaR ({var_result["confidence"]:.0%}, QuantLib)</div>'
-            f'<div class="stat-value">${var_result["var_usd"]:,.0f}</div></div>'
+            f'<div class="stat-value">${var_result["var_usd"]:,.0f}</div>'
+            + (f'<div class="stat-sub">{html.escape(sub)}</div>' if sub else '')
+            + '</div>'
         )
     else:
         var_tile = (
@@ -281,6 +290,7 @@ def build_html(run_log, history, weights, sectors):
   .stat-label {{ font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }}
   .stat-value {{ font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }}
   .stat-value.muted-value {{ color: var(--text-muted); font-weight: 500; }}
+  .stat-sub {{ font-size: 11px; color: var(--text-muted); margin-top: 4px; }}
   .card {{
     background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
     padding: 18px 20px; margin-bottom: 24px;
