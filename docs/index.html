@@ -97,7 +97,7 @@
 <body>
 <div class="wrap">
   <h1>Top 20 Stocks — Daily Dashboard</h1>
-  <p class="subtitle">Last run: Friday 21 August 2026, 21:37 UTC</p>
+  <p class="subtitle">Last run: Saturday 22 August 2026, 21:00 UTC</p>
   <p class="disclaimer">This is a personal research/backtesting tool, not investment advice.
     Numbers come from a dry-run pipeline — nothing here has been submitted as a real order.</p>
 
@@ -106,7 +106,7 @@
     <div class="stat-tile"><div class="stat-label">Regime scalar (k)</div><div class="stat-value">0.91</div></div>
     <div class="stat-tile"><div class="stat-label">Target volatility</div><div class="stat-value">11.1%</div></div>
     <div class="stat-tile"><div class="stat-label">Positions held</div><div class="stat-value">15/20</div></div>
-    <div class="stat-tile"><div class="stat-label">1-day VaR (95%, QuantLib)</div><div class="stat-value">$10,625</div><div class="stat-sub">within 2.5% budget, no scaling</div></div>
+    <div class="stat-tile"><div class="stat-label">1-day VaR (95%, QuantLib)</div><div class="stat-value">$10,622</div><div class="stat-sub">within 2.5% budget, no scaling</div></div>
   </div>
 
   <div class="card">
@@ -116,11 +116,27 @@
     <div class="chart-grid">
       <div>
         <div class="card-sub">Cash % held over time</div>
-        <div class="chart-wrap"><div class="chart-empty">Not enough history yet (1 day logged) - check back after a few more nightly runs.</div></div>
+        <div class="chart-wrap">
+<svg viewBox="0 0 520 160" class="line-chart" id="cash-chart">
+  <line x1="40" y1="132.0" x2="504" y2="132.0" class="gridline" /><text x="34" y="135.0" class="axis-label" text-anchor="end">8.9%</text><line x1="40" y1="74.0" x2="504" y2="74.0" class="gridline" /><text x="34" y="77.0" class="axis-label" text-anchor="end">8.9%</text><line x1="40" y1="16.0" x2="504" y2="16.0" class="gridline" /><text x="34" y="19.0" class="axis-label" text-anchor="end">8.9%</text>
+  <path d="M 40.0 16.0 L 504.0 132.0" class="series-line" fill="none" />
+  <circle cx="40.0" cy="16.0" r="3" class="dot" data-date="2026-08-21" data-value="8.9%" data-chart="cash-chart" /><circle cx="504.0" cy="132.0" r="3" class="dot" data-date="2026-08-22" data-value="8.9%" data-chart="cash-chart" />
+  <text x="504" y="14" class="axis-label" text-anchor="end">latest: 8.9%</text>
+</svg>
+<div class="tooltip" id="cash-chart-tooltip"></div>
+</div>
       </div>
       <div>
         <div class="card-sub">Regime scalar over time</div>
-        <div class="chart-wrap"><div class="chart-empty">Not enough history yet (1 day logged) - check back after a few more nightly runs.</div></div>
+        <div class="chart-wrap">
+<svg viewBox="0 0 520 160" class="line-chart" id="regime-chart">
+  <line x1="40" y1="132.0" x2="504" y2="132.0" class="gridline" /><text x="34" y="135.0" class="axis-label" text-anchor="end">0.86</text><line x1="40" y1="74.0" x2="504" y2="74.0" class="gridline" /><text x="34" y="77.0" class="axis-label" text-anchor="end">0.91</text><line x1="40" y1="16.0" x2="504" y2="16.0" class="gridline" /><text x="34" y="19.0" class="axis-label" text-anchor="end">0.96</text>
+  <path d="M 40.0 74.0 L 504.0 74.0" class="series-line" fill="none" />
+  <circle cx="40.0" cy="74.0" r="3" class="dot" data-date="2026-08-21" data-value="0.91" data-chart="regime-chart" /><circle cx="504.0" cy="74.0" r="3" class="dot" data-date="2026-08-22" data-value="0.91" data-chart="regime-chart" />
+  <text x="504" y="14" class="axis-label" text-anchor="end">latest: 0.91</text>
+</svg>
+<div class="tooltip" id="regime-chart-tooltip"></div>
+</div>
       </div>
     </div>
   </div>
